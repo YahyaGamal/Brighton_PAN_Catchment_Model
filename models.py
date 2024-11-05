@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import copy
 import math
+import random
 import numpy as np
 import warnings
 warnings.filterwarnings("ignore")
@@ -64,6 +65,13 @@ def portion_within(geometry_a, geometry_b):
     portion = intersection_area / geometry_a.area
     return portion
 
+def extract_PANs(PANs, PAN_year):
+    ## Extract the PANs for the input year
+    target_PAN = {}
+    for school_str in PANs["school"]:
+        target_PAN[school_str] = int(PANs[PANs["school"] == school_str][f"pan{PAN_year}"])
+    return target_PAN
+
 ## generate additional attribute columns
 def reset_parameters(catchment, schools, students):
     ## Catchments
@@ -74,6 +82,7 @@ def reset_parameters(catchment, schools, students):
     # Column to assign colours
     # Column to assign catchment ID
     schools["students_total"] = [0 for index in schools.index]
+    schools["students_3_miles"] = [0 for index in schools.index]
     schools["catchment_ID"] = [0 for index in schools.index]
     schools["catchment_ID"] = [point_catchment_ID(schools, i, catchment) for i in schools.index]
     schools["colour"] = ["" for index in schools.index]
@@ -88,7 +97,9 @@ def reset_parameters(catchment, schools, students):
     students["catchment_ID"] = [polygon_catchment_ID(students, i, catchment) for i in students.index]
     students["catchment_ID_school"] = [0 for index in students.index]
     students["dist_to_school"] = [0 for index in students.index]
+    students["distx5_est"] = [0 for index in students.index]
     students["colour"] = ["" for index in students.index]
+    students["external"] = [False for index in students.index]
 
     return {
         "schools": schools, 
@@ -100,8 +111,7 @@ def reset_parameters(catchment, schools, students):
 def Optimise_PANs_Schools(
         schools,
         students_lsoa,
-        PANs,
-        PAN_year=2024,
+        target_PAN,
         initial_school="Dorothy Stringer School",
         ):
     """
@@ -157,10 +167,8 @@ def Optimise_PANs_Schools(
         
 
     ## Extract the PANs for the input year
-    target_PAN = {}
     saturated_PAN = {}
-    for school_str in PANs["school"]:
-        target_PAN[school_str] = int(PANs[PANs["school"] == school_str][f"pan{PAN_year}"])
+    for school_str in target_PAN:
         saturated_PAN[school_str] = False
     ## while any LSOA has not been adressed a school
     while len(students_lsoa[students_lsoa["school"] == ""].index) > 0:
@@ -291,8 +299,7 @@ def Optimise_PANs_LSOAs(
 def Optimise_PANsCatchment_Schools(
         schools,
         students_lsoa,
-        PANs,
-        PAN_year=2024,
+        target_PAN,
         initial_school="Dorothy Stringer School",
         ):
     """
@@ -307,10 +314,8 @@ def Optimise_PANsCatchment_Schools(
         School locations as points
     `students_losa`: GeoPandas DataFrame
         LSOAs including an attribute for the number of students "est_5"
-    `PANs`: Pandas DataFrame
-        Planned PANs for each school
-    `PAN_year`: int (default=2024)
-        PAN year to extract the values from the `PANs` DataFrame
+    `PANs`: dict
+        Schools names as index and PAN as value
     `initial_school`: str (default="Dorothy Stringer School")
         The initial school in the optimisation loop
 
@@ -352,10 +357,8 @@ def Optimise_PANsCatchment_Schools(
         
 
     ## Extract the PANs for the input year
-    target_PAN = {}
     saturated_PAN = {}
-    for school_str in PANs["school"]:
-        target_PAN[school_str] = int(PANs[PANs["school"] == school_str][f"pan{PAN_year}"])
+    for school_str in target_PAN:
         saturated_PAN[school_str] = False
     ## while any LSOA has not been adressed a school
     while len(students_lsoa[students_lsoa["school"] == ""].index) > 0:
@@ -385,18 +388,24 @@ def Optimise_PANsCatchment_Schools(
                     students_lsoa.at[i_lsoa, "school"] = current_str
                     students_lsoa.at[i_lsoa, "catchment_ID_school"] = schools_IDs[current_str]
                     students_lsoa.at[i_lsoa, "dist_to_school"] = min(dists_school_LSOAs)
+                    students_lsoa.at[i_lsoa, "distx5_est"] = min(dists_school_LSOAs) * students_lsoa.at[i_lsoa, "5_est"]
+                    students_lsoa.at[i_lsoa, "external"] = False
                 ## if this is the last school with any availability. Add the students to it
                 elif schools.at[i_cSchool, "students_total"] + students_lsoa.at[i_lsoa, "5_est"] >= target_PAN[current_str] and list(saturated_PAN.values()).count(False) == 1:
                     schools.at[i_cSchool, "students_total"] += students_lsoa.at[i_lsoa, "5_est"]
                     students_lsoa.at[i_lsoa, "school"] = current_str
                     students_lsoa.at[i_lsoa, "catchment_ID_school"] = schools_IDs[current_str]
                     students_lsoa.at[i_lsoa, "dist_to_school"] = min(dists_school_LSOAs)
+                    students_lsoa.at[i_lsoa, "distx5_est"] = min(dists_school_LSOAs) * students_lsoa.at[i_lsoa, "5_est"]
+                    students_lsoa.at[i_lsoa, "external"] = False
                     saturated_PAN[current_str] = True
                 else:
                     saturated_PAN[current_str] = True
             
             ## Accumilate to the student from the closest LSOA regardless of PAN, if all schools reached their PANs
-            if list(saturated_PAN.values()).count(False) == 0:
+            if list(saturated_PAN.values()).count(False) == 0 \
+            and len(students_lsoa[students_lsoa["school"] == ""].index) > 0\
+            and target_PAN[current_str] > 0:
                 # find LSOA without an assigned establishment_name
                 lsoa_temp = students_lsoa[students_lsoa["school"] == ""]
                 dists_school_LSOAs = current_school.at[i_cSchool, "geometry"].distance(lsoa_temp["geometry"])
@@ -405,6 +414,8 @@ def Optimise_PANsCatchment_Schools(
                 students_lsoa.at[i_lsoa, "school"] = current_str
                 students_lsoa.at[i_lsoa, "catchment_ID_school"] = schools_IDs[current_str]
                 students_lsoa.at[i_lsoa, "dist_to_school"] = min(dists_school_LSOAs)
+                students_lsoa.at[i_lsoa, "distx5_est"] = min(dists_school_LSOAs) * students_lsoa.at[i_lsoa, "5_est"]
+                students_lsoa.at[i_lsoa, "external"] = True
 
             ## if the school is saturated, skip it
             if saturated_PAN[current_str] == True:
@@ -513,3 +524,141 @@ def Optimise_PANsCatchment_LSOAs(
         "schools": schools,
         "students": students_lsoa,
     }
+
+def Random_PANsCatchment_schools(
+    schools,
+    students_lsoa,
+    target_PAN,
+    n_runs=20
+    ):  
+    """
+    A function that identifies the catchement areas based on the proposed PANs. 
+    Loops through schools and assigns LSOAs. 
+    This is constrained to a predefined catchment.
+    The `schools` and `students_lsoa` must include a parameter labelled as "catchment_ID".
+
+    Parameters
+    ----------
+    `schools`: GeoPandas DataFrame
+        School locations as points
+    `students_losa`: GeoPandas DataFrame
+        LSOAs including an attribute for the number of students "est_5"
+    `PANs`: dict
+        Schools names as index and PAN as value
+
+    Returns
+    -------
+    Dictionary including:
+        - "schools": GeoPandas DataFrame,
+        - "students": GeoPandas DataFrame
+    """
+        ## prepare outcome parameters
+    distances = {}
+    distances_outside_catchment = {}
+    students_3_miles = {}
+    for school_str in target_PAN:
+        distances[school_str] = list()
+        distances_outside_catchment[school_str] = list()
+        students_3_miles[school_str] = list()
+
+    for n in tqdm(range(n_runs)):
+        schools["students_total"] = [0 for index in schools.index]
+        schools["students_3_miles"] = [0 for index in schools.index]
+        students_lsoa["school"] = ["" for index in students_lsoa.index]
+        students_lsoa["dist_to_school"] = [0 for index in students_lsoa.index]
+        students_lsoa["distx5_est"] = [0 for index in students_lsoa.index]
+        students_lsoa["colour"] = ["" for index in students_lsoa.index]
+        students_lsoa["external"] = [False for index in students_lsoa.index]
+        random.seed(n + random.randint(0, 100000000))
+        ## prepare saturated PANs disctionary
+        saturated_PAN = {}
+        schools_IDs = {}
+        for school_str in target_PAN:
+            saturated_PAN[school_str] = False
+            # update the IDs
+            current_school = schools[schools["establishment_name"] == school_str]
+            i_cSchool = current_school.index[0]
+            ID_cSchool = current_school.at[i_cSchool, "catchment_ID"]
+            schools_IDs[school_str] = (schools.at[i_cSchool, "catchment_ID"])
+        ## while any LSOA has not been adressed a school
+        while len(students_lsoa[students_lsoa["school"] == ""].index) > 0:
+            # Loop through the schools
+            for current_str in target_PAN:
+                ## initial school
+                current_school = schools[schools["establishment_name"] == current_str]
+                i_cSchool = current_school.index[0]
+                ID_cSchool = current_school.at[i_cSchool, "catchment_ID"]
+
+                ## Accumilate students from the closest LSOAs
+                if saturated_PAN[current_str] == False:
+                    # find LSOAs without an assignment establishment_name and within the schools catchment
+                    lsoa_in_catchment = students_lsoa[(students_lsoa["school"] == "") & (students_lsoa["catchment_ID"] == schools_IDs[current_str])]
+                    if len(lsoa_in_catchment) > 0:
+                        lsoa_temp = lsoa_in_catchment
+                    # else, if no LSOAs are within the catchment, find any LSOAs without an assigned establishment_name
+                    else:
+                        lsoa_temp = students_lsoa[students_lsoa["school"] == ""]
+
+                    # find a random LSOA
+                    if len(lsoa_temp.index) > 0: i_lsoa = random.choice(lsoa_temp.index)
+                    else: break
+                    # calculate distance from all LSOAs
+                    dists_school_LSOAs = current_school.at[i_cSchool, "geometry"].distance(lsoa_temp["geometry"])
+                    ## if adding the number of students in the LSOA will not lead to exceeding the PAN
+                    if schools.at[i_cSchool, "students_total"] + students_lsoa.at[i_lsoa, "5_est"] < target_PAN[current_str]:
+                        schools.at[i_cSchool, "students_total"] += students_lsoa.at[i_lsoa, "5_est"]
+                        students_lsoa.at[i_lsoa, "school"] = current_str
+                        students_lsoa.at[i_lsoa, "catchment_ID_school"] = schools_IDs[current_str]
+                        students_lsoa.at[i_lsoa, "dist_to_school"] = dists_school_LSOAs[i_lsoa]
+                        if dists_school_LSOAs[i_lsoa] > 3 / 0.000621371: schools.at[i_cSchool, "students_3_miles"] += students_lsoa.at[i_lsoa, "5_est"]
+                        students_lsoa.at[i_lsoa, "distx5_est"] = dists_school_LSOAs[i_lsoa] * students_lsoa.at[i_lsoa, "5_est"]
+                        students_lsoa.at[i_lsoa, "external"] = False
+                    ## if this is the last school with any availability. Add the students to it
+                    elif schools.at[i_cSchool, "students_total"] + students_lsoa.at[i_lsoa, "5_est"] >= target_PAN[current_str] and list(saturated_PAN.values()).count(False) == 1:
+                        schools.at[i_cSchool, "students_total"] += students_lsoa.at[i_lsoa, "5_est"]
+                        students_lsoa.at[i_lsoa, "school"] = current_str
+                        students_lsoa.at[i_lsoa, "catchment_ID_school"] = schools_IDs[current_str]
+                        students_lsoa.at[i_lsoa, "dist_to_school"] = dists_school_LSOAs[i_lsoa]
+                        if dists_school_LSOAs[i_lsoa] > 3 / 0.000621371: schools.at[i_cSchool, "students_3_miles"] += students_lsoa.at[i_lsoa, "5_est"]
+                        students_lsoa.at[i_lsoa, "distx5_est"] = dists_school_LSOAs[i_lsoa] * students_lsoa.at[i_lsoa, "5_est"]
+                        students_lsoa.at[i_lsoa, "external"] = False
+                        saturated_PAN[current_str] = True
+                    else:
+                        saturated_PAN[current_str] = True
+                
+                ## Accumilate to the student from the closest LSOA regardless of PAN, if all schools reached their PANs
+                if list(saturated_PAN.values()).count(False) == 0 \
+                and len(students_lsoa[students_lsoa["school"] == ""].index) > 0\
+                and target_PAN[current_str] > 0:
+                    # find LSOA without an assigned establishment_name
+                    lsoa_temp = students_lsoa[students_lsoa["school"] == ""]
+                    i_lsoa = random.choice(lsoa_temp.index)
+                    # calculate distance from all LSOAs
+                    dists_school_LSOAs = current_school.at[i_cSchool, "geometry"].distance(lsoa_temp["geometry"])
+                    # address parameters
+                    schools.at[i_cSchool, "students_total"] += students_lsoa.at[i_lsoa, "5_est"]
+                    students_lsoa.at[i_lsoa, "school"] = current_str
+                    students_lsoa.at[i_lsoa, "catchment_ID_school"] = schools_IDs[current_str]
+                    students_lsoa.at[i_lsoa, "dist_to_school"] = dists_school_LSOAs[i_lsoa]
+                    if dists_school_LSOAs[i_lsoa] > 3 / 0.000621371: schools.at[i_cSchool, "students_3_miles"] += students_lsoa.at[i_lsoa, "5_est"]
+                    students_lsoa.at[i_lsoa, "distx5_est"] = dists_school_LSOAs[i_lsoa] * students_lsoa.at[i_lsoa, "5_est"]
+                    students_lsoa.at[i_lsoa, "external"] = True
+
+                ## if the school is saturated, skip it
+                if saturated_PAN[current_str] == True:
+                    continue
+        for school_str in target_PAN:
+            ## find all LSOAs outside the catchment
+            LSOAs_outside_catchment = students_lsoa[(students_lsoa["school"] == school_str) & (students_lsoa["catchment_ID"] != students_lsoa["catchment_ID_school"])]
+            if target_PAN[school_str] == 0: distances[school_str].append(0)
+            else: distances[school_str].append( ( sum(students_lsoa[students_lsoa["school"] == school_str]["distx5_est"]) / sum(students_lsoa[students_lsoa["school"] == school_str]["5_est"]) ) * 0.000621371)
+            if len(LSOAs_outside_catchment.index) > 0:
+                distances_outside_catchment[school_str].append( (sum(LSOAs_outside_catchment["distx5_est"]) / sum(LSOAs_outside_catchment["5_est"]))  *  0.000621371)
+            else:
+                distances_outside_catchment[school_str].append(0)
+            current_school = schools[schools["establishment_name"] == school_str]
+            i_cSchool = current_school.index[0]
+            students_3_miles[school_str].append(schools.at[i_cSchool, "students_3_miles"])
+
+
+    return distances, distances_outside_catchment, students_3_miles
